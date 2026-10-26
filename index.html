@@ -177,7 +177,7 @@ h1.road{margin:0;font:700 clamp(38px,12.5vw,60px)/.95 var(--font-display);letter
 var R=Math.PI/180;
 var DIRW=['Northbound','North-easterly','Eastbound','South-easterly','Southbound','South-westerly','Westbound','North-westerly'];
 var ZOOMS=[150,250,400,700];
-var EP=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+var EP=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
 function $(id){return document.getElementById(id);}
 function dirIdx(h){return Math.round((((h%360)+360)%360)/45)%8;}
 
@@ -658,21 +658,46 @@ function demoTick(first){
 }
 /* real streets around Parramatta, loaded when the page is online */
 function fetchDemoMap(){
-  var la=PC.lat.toFixed(5),lo=PC.lon.toFixed(5),ar='(around:1500,'+la+','+lo+')';
-  var q='[out:json][timeout:40];('
-    +'way(around:1500,'+la+','+lo+')[highway~"^(tertiary|unclassified|residential)(_link)?$"];'
-    +'way(around:3500,'+la+','+lo+')[highway~"^(motorway|trunk|primary|secondary)(_link)?$"];'
+  var la=PC.lat.toFixed(5),lo=PC.lon.toFixed(5),ar='(around:1100,'+la+','+lo+')';
+  var q='[out:json][timeout:25];('
+    +'way(around:1100,'+la+','+lo+')[highway~"^(tertiary|unclassified|residential)(_link)?$"];'
+    +'way(around:3000,'+la+','+lo+')[highway~"^(motorway|trunk|primary|secondary)(_link)?$"];'
     +'way'+ar+'[leisure~"^(park|garden|nature_reserve|recreation_ground)$"];'
     +'way'+ar+'[landuse~"^(grass|recreation_ground|forest|cemetery)$"];'
     +'way'+ar+'[natural~"^(water|wood|scrub)$"];'
     +'way'+ar+'[waterway~"^(river|stream|canal)$"];);out geom;';
-  var i=0;
+  var i=0,hasCache=(typeof caches!=='undefined');
+  st.demoWhy='';
+  function load(url){
+    var look=hasCache?caches.open('locstat-v1').then(function(c){return c.match(url);}).catch(function(){return null;}):Promise.resolve(null);
+    return look.then(function(hit){
+      if(hit)return hit.json();
+      var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort();},30000);
+      return fetch(url,{signal:ctl.signal}).then(function(r){
+        clearTimeout(tm);
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        return r.json();
+      },function(e){clearTimeout(tm);throw new Error(e&&e.name==='AbortError'?'timed out':'network error');})
+      .then(function(j){
+        if(hasCache&&j&&j.elements&&j.elements.length){
+          try{caches.open('locstat-v1').then(function(c){return c.put(url,new Response(JSON.stringify(j),{headers:{'Content-Type':'application/json'}}));}).catch(function(){});}catch(e){}
+        }
+        return j;
+      });
+    });
+  }
   function attempt(){
-    var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort();},45000);
-    return fetch(EP[i]+'?data='+encodeURIComponent(q),{signal:ctl.signal})
-      .then(function(r){clearTimeout(tm);if(!r.ok)throw new Error('http');return r.json();})
-      .then(function(j){if(!j||!j.elements||!j.elements.length)throw new Error('empty');ingest(j.elements);return true;})
-      .catch(function(){clearTimeout(tm);i++;if(i<EP.length)return attempt();return false;});
+    var url=EP[i]+'?data='+encodeURIComponent(q);
+    return load(url).then(function(j){
+      if(!j||!j.elements||!j.elements.length)throw new Error(j&&j.remark?'map server busy':'no street data');
+      ingest(j.elements);
+      return true;
+    }).catch(function(e){
+      st.demoWhy=(e&&e.message)||'unknown error';
+      i++;
+      if(i<EP.length)return attempt();
+      return false;
+    });
   }
   return attempt();
 }
@@ -715,8 +740,12 @@ function startDemo(){
     if(gen!==st.gen)return;
     if(ok){
       st.mapState='ok';
-      if(beginDemo('osm',0,0,2000)){toast('Demo: simulated pursuit on real Parramatta streets',4500);return;}
+      var started=false;
+      try{started=beginDemo('osm',0,0,1800);}catch(e){st.demoWhy='route error: '+((e&&e.message)||'unknown');}
+      if(started){toast('Demo: simulated pursuit on real Parramatta streets',4500);return;}
+      if(!st.demoWhy)st.demoWhy='no drivable road found';
     }
+    toast('Could not load Parramatta streets ('+(st.demoWhy||'unknown')+'). Showing demo streets. Tap Use GPS, then Demo, to retry.',9000);
     useSynthetic();
   });
 }
